@@ -1,6 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use anyhow::{Error, Result, ensure};
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use reqwest::Url;
 
 use crate::crawler::{FetchClient, fetch::FetchResult, fetch_url};
@@ -31,6 +32,7 @@ pub struct Crawler {
     fetch_client: FetchClient,
     max_depth: usize,
     max_pages: usize,
+    max_concurrency: usize,
 }
 
 impl CrawlJob {
@@ -43,22 +45,49 @@ impl CrawlJob {
 }
 
 impl Crawler {
-    pub fn new(fetch_client: FetchClient, max_depth: usize, max_pages: usize) -> Result<Self> {
+    pub fn new(
+        fetch_client: FetchClient,
+        max_depth: usize,
+        max_pages: usize,
+        max_concurrency: usize,
+    ) -> Result<Self> {
         ensure!(max_pages > 0, "max_pages must be greater than zero");
+        ensure!(
+            max_concurrency > 0,
+            "max_concurrency must be greater than zero"
+        );
         Ok(Self {
             fetch_client,
             max_depth,
             max_pages,
+            max_concurrency,
         })
     }
 
     pub async fn crawl(&self, root: Url) -> CrawlReport {
         let mut queue = VecDeque::from([CrawlJob::new(root.clone())]);
+        let mut in_flight = FuturesUnordered::new();
         let mut seen = HashSet::from([root]);
         let mut report = CrawlReport::default();
 
-        while let Some(job) = queue.pop_front() {
-            match fetch_url(&job.url, &self.fetch_client).await {
+        while !queue.is_empty() || !in_flight.is_empty() {
+            while in_flight.len() < self.max_concurrency {
+                let Some(job) = queue.pop_front() else {
+                    break;
+                };
+                let fetch_client = &self.fetch_client;
+
+                in_flight.push(async move {
+                    let result = fetch_url(&job.url, fetch_client).await;
+                    (job, result)
+                });
+            }
+
+            let Some((job, result)) = in_flight.next().await else {
+                break;
+            };
+
+            match result {
                 Ok(fetch) => {
                     if fetch.status_code.is_success() && job.depth < self.max_depth {
                         for link in &fetch.links {
@@ -91,7 +120,10 @@ mod tests {
     use std::collections::HashMap;
     use std::io::{ErrorKind, Read, Write};
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -101,24 +133,46 @@ mod tests {
     struct Route {
         status: u16,
         body: &'static str,
+        delay: Duration,
     }
 
     fn route(status: u16, body: &'static str) -> Route {
-        Route { status, body }
+        Route {
+            status,
+            body,
+            delay: Duration::ZERO,
+        }
     }
 
-    fn server(
-        routes: HashMap<&'static str, Route>,
-        expected_requests: usize,
-    ) -> (Url, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+    fn delayed_route(body: &'static str) -> Route {
+        Route {
+            status: 200,
+            body,
+            delay: Duration::from_millis(50),
+        }
+    }
+
+    type TestServer = (
+        Url,
+        Arc<Mutex<Vec<String>>>,
+        Arc<AtomicUsize>,
+        thread::JoinHandle<()>,
+    );
+
+    fn server(routes: HashMap<&'static str, Route>, expected_requests: usize) -> TestServer {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded_requests = Arc::clone(&requests);
+        let active_requests = Arc::new(AtomicUsize::new(0));
+        let measured_active_requests = Arc::clone(&active_requests);
+        let max_active_requests = Arc::new(AtomicUsize::new(0));
+        let measured_max_active_requests = Arc::clone(&max_active_requests);
 
         let handle = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(5);
+            let mut handlers = Vec::new();
             let mut handled = 0;
 
             while handled < expected_requests && Instant::now() < deadline {
@@ -139,32 +193,49 @@ mod tests {
                 recorded_requests.lock().unwrap().push(path.clone());
                 handled += 1;
 
-                let route = routes.get(path.as_str()).unwrap();
-                if route.status == 0 {
-                    continue;
-                }
+                let route = *routes.get(path.as_str()).unwrap();
+                let active_requests = Arc::clone(&measured_active_requests);
+                let max_active_requests = Arc::clone(&measured_max_active_requests);
+                handlers.push(thread::spawn(move || {
+                    let measure_concurrency = !route.delay.is_zero();
+                    if measure_concurrency {
+                        let active = active_requests.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_active_requests.fetch_max(active, Ordering::SeqCst);
+                        thread::sleep(route.delay);
+                    }
 
-                let reason = if route.status == 200 {
-                    "OK"
-                } else {
-                    "Not Found"
-                };
-                let response = format!(
-                    "HTTP/1.1 {} {}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    route.status,
-                    reason,
-                    route.body.len(),
-                    route.body
-                );
-                stream.write_all(response.as_bytes()).unwrap();
+                    if route.status != 0 {
+                        let reason = if route.status == 200 {
+                            "OK"
+                        } else {
+                            "Not Found"
+                        };
+                        let response = format!(
+                            "HTTP/1.1 {} {}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            route.status,
+                            reason,
+                            route.body.len(),
+                            route.body
+                        );
+                        stream.write_all(response.as_bytes()).unwrap();
+                    }
+
+                    if measure_concurrency {
+                        active_requests.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }));
             }
 
             assert_eq!(handled, expected_requests);
+            for handler in handlers {
+                handler.join().unwrap();
+            }
         });
 
         (
             Url::parse(&format!("http://{address}/")).unwrap(),
             requests,
+            max_active_requests,
             handle,
         )
     }
@@ -183,8 +254,8 @@ mod tests {
             ("/bad", route(404, r#"<a href="/never">never</a>"#)),
             ("/deep", route(200, "done")),
         ]);
-        let (root, requests, server) = server(routes, 4);
-        let crawler = Crawler::new(FetchClient::new(), 2, 10).unwrap();
+        let (root, requests, _, server) = server(routes, 4);
+        let crawler = Crawler::new(FetchClient::new(), 2, 10, 1).unwrap();
 
         let report = crawler.crawl(root).await;
         server.join().unwrap();
@@ -213,8 +284,8 @@ mod tests {
             ),
             ("/a", route(200, "done")),
         ]);
-        let (root, requests, server) = server(routes, 2);
-        let crawler = Crawler::new(FetchClient::new(), 2, 2).unwrap();
+        let (root, requests, _, server) = server(routes, 2);
+        let crawler = Crawler::new(FetchClient::new(), 2, 2, 1).unwrap();
 
         let report = crawler.crawl(root).await;
         server.join().unwrap();
@@ -233,8 +304,8 @@ mod tests {
             ("/fail", route(0, "")),
             ("/ok", route(200, "done")),
         ]);
-        let (root, requests, server) = server(routes, 3);
-        let crawler = Crawler::new(FetchClient::new(), 1, 3).unwrap();
+        let (root, requests, _, server) = server(routes, 3);
+        let crawler = Crawler::new(FetchClient::new(), 1, 3, 1).unwrap();
 
         let report = crawler.crawl(root).await;
         server.join().unwrap();
@@ -245,8 +316,33 @@ mod tests {
         assert_eq!(report.failures[0].job.url.path(), "/fail");
     }
 
+    #[tokio::test]
+    async fn crawl_respects_concurrency_limit() {
+        let routes = HashMap::from([
+            (
+                "/",
+                route(
+                    200,
+                    r#"<a href="/a">a</a><a href="/b">b</a><a href="/c">c</a>"#,
+                ),
+            ),
+            ("/a", delayed_route("done")),
+            ("/b", delayed_route("done")),
+            ("/c", delayed_route("done")),
+        ]);
+        let (root, _, max_active_requests, server) = server(routes, 4);
+        let crawler = Crawler::new(FetchClient::new(), 1, 4, 2).unwrap();
+
+        let report = crawler.crawl(root).await;
+        server.join().unwrap();
+
+        assert_eq!(report.pages.len(), 4);
+        assert_eq!(max_active_requests.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
-    fn crawler_rejects_zero_page_limit() {
-        assert!(Crawler::new(FetchClient::new(), 0, 0).is_err());
+    fn crawler_rejects_zero_limits() {
+        assert!(Crawler::new(FetchClient::new(), 0, 0, 1).is_err());
+        assert!(Crawler::new(FetchClient::new(), 0, 1, 0).is_err());
     }
 }
