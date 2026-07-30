@@ -1,6 +1,8 @@
 use reqwest::Url;
 use scraper::{Html, Selector};
 
+use super::normalize_text;
+
 static LINK_SELECTOR: std::sync::LazyLock<Selector> = std::sync::LazyLock::new(|| {
     Selector::parse("a[href]").expect("hardcoded link selector must be valid")
 });
@@ -13,10 +15,7 @@ pub struct ParsedLink {
     pub nofollow: bool,
 }
 
-pub fn extract_links(html: &[u8], page_url: &Url) -> Vec<ParsedLink> {
-    let body = String::from_utf8_lossy(html);
-    let document = Html::parse_document(&body);
-
+pub(super) fn extract_links(document: &Html, page_url: &Url) -> Vec<ParsedLink> {
     document
         .select(&LINK_SELECTOR)
         .filter_map(|anchor| {
@@ -25,7 +24,7 @@ pub fn extract_links(html: &[u8], page_url: &Url) -> Vec<ParsedLink> {
 
             Some(ParsedLink {
                 internal: is_internal(page_url, &target_url),
-                anchor_text: normalize_anchor_text(anchor.text()),
+                anchor_text: normalize_text(anchor.text()),
                 target_url,
                 nofollow: rel
                     .split_whitespace()
@@ -89,29 +88,6 @@ fn strip_one_www(host: &str) -> &str {
         .unwrap_or(host)
 }
 
-fn normalize_anchor_text<'a>(text: impl Iterator<Item = &'a str>) -> String {
-    let mut normalized = String::new();
-    let mut whitespace = false;
-
-    for chunk in text {
-        for character in chunk.chars() {
-            if character.is_whitespace() {
-                if !normalized.is_empty() {
-                    whitespace = true;
-                }
-            } else {
-                if whitespace {
-                    normalized.push(' ');
-                    whitespace = false;
-                }
-                normalized.push(character);
-            }
-        }
-    }
-
-    normalized
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,9 +96,15 @@ mod tests {
         Url::parse("https://example.com/start").unwrap()
     }
 
+    fn extract(html: &[u8], page_url: &Url) -> Vec<ParsedLink> {
+        let body = String::from_utf8_lossy(html);
+        let document = Html::parse_document(&body);
+        extract_links(&document, page_url)
+    }
+
     #[test]
     fn resolves_relative_links_and_collapses_descendant_text() {
-        let links = extract_links(
+        let links = extract(
             br#"<a href=" /docs/../about "> Hello <span>world</span>
                 <em>wide</em> </a>"#,
             &page_url(),
@@ -135,7 +117,7 @@ mod tests {
 
     #[test]
     fn marks_external_links_and_case_insensitive_nofollow_tokens() {
-        let links = extract_links(
+        let links = extract(
             br#"<a href="https://other.example/path" rel="external NOFOLLOW">Outside</a>"#,
             &page_url(),
         );
@@ -147,7 +129,7 @@ mod tests {
     #[test]
     fn ignores_www_and_ports_but_not_subdomains_for_internal_links() {
         let page = Url::parse("https://WWW.Example.com:8443/start").unwrap();
-        let links = extract_links(
+        let links = extract(
             br#"
                 <a href="http://example.com:1/apex">apex</a>
                 <a href="https://www.example.com:2/www">www</a>
@@ -163,7 +145,7 @@ mod tests {
 
     #[test]
     fn removes_fragments_without_changing_document_order() {
-        let links = extract_links(
+        let links = extract(
             br#"
                 <a href="/first#one">first</a>
                 <a href="//EXAMPLE.com/second#two">second</a>
@@ -182,7 +164,7 @@ mod tests {
 
     #[test]
     fn skips_empty_unsupported_and_invalid_targets() {
-        let links = extract_links(
+        let links = extract(
             br#"
                 <a href=""></a>
                 <a href="   "></a>
@@ -202,7 +184,7 @@ mod tests {
 
     #[test]
     fn accepts_valid_https_links() {
-        let links = extract_links(
+        let links = extract(
             br#"<a href="HTTPS://example.com/path">valid</a>"#,
             &page_url(),
         );
@@ -212,7 +194,7 @@ mod tests {
 
     #[test]
     fn preserves_duplicate_links() {
-        let links = extract_links(
+        let links = extract(
             br#"
                 <a href="/same">one</a>
                 <a href="/same">two</a>
