@@ -34,6 +34,7 @@ async fn main() -> Result<()> {
         println!("  total fetch: {fetch_time:?}");
         println!("  page extraction: {:?}", page.fetch.page_extraction_time);
         println!("  title: {:?}", page.fetch.metadata.title);
+        println!("  author: {:?}", page.fetch.author);
         println!(
             "  meta description: {:?}",
             page.fetch.metadata.meta_description

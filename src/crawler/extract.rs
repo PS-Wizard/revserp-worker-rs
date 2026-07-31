@@ -1,3 +1,4 @@
+mod author;
 mod body;
 mod headings;
 mod images;
@@ -23,6 +24,7 @@ pub struct ExtractedPage {
     pub metadata: ParsedMetadata,
     pub social_metadata: ParsedSocialMetadata,
     pub structured_data: ParsedStructuredData,
+    pub author: String,
     pub images: ParsedImages,
     pub visible_text: String,
 }
@@ -32,6 +34,7 @@ pub fn extract_page(html: &[u8], page_url: &Url) -> ExtractedPage {
     let document = Html::parse_document(&body);
 
     let structured_data = structured_data::extract_structured_data(&document);
+    let author = author::extract_author(&document, &structured_data.json_ld_blocks);
 
     ExtractedPage {
         links: links::extract_links(&document, page_url),
@@ -39,6 +42,7 @@ pub fn extract_page(html: &[u8], page_url: &Url) -> ExtractedPage {
         metadata: metadata::extract_metadata(&document, page_url),
         social_metadata: social_metadata::extract_social_metadata(&document),
         structured_data,
+        author,
         images: images::extract_images(&document),
         visible_text: body::extract_visible_text(&document),
     }
@@ -131,7 +135,7 @@ mod tests {
     fn extracts_links_and_headings_from_one_document() {
         let page_url = Url::parse("https://example.com/").unwrap();
         let page = extract_page(
-            br#"<title>Page metadata</title><meta property="og:title" content="OG title"><meta name="twitter:card" content="summary"><link rel="canonical" href="/canonical"><h1>Page title</h1> <p>Useful body</p> <img src="hero.jpg" alt="Hero" width="640" height="480"> <img src="missing-height.jpg" alt="" width="100"> <img src="missing-width.jpg" alt="  " height="100"> <script>ignored()</script> <script type="application/ld+json"> {"@type":"WebPage"} </script> <a href="/next">Next</a>"#,
+            br#"<title>Page metadata</title><meta name="author" content="Fixture Author"><meta property="og:title" content="OG title"><meta name="twitter:card" content="summary"><link rel="canonical" href="/canonical"><h1>Page title</h1> <p>Useful body</p> <img src="hero.jpg" alt="Hero" width="640" height="480"> <img src="missing-height.jpg" alt="" width="100"> <img src="missing-width.jpg" alt="  " height="100"> <script>ignored()</script> <script type="application/ld+json"> {"@type":"WebPage"} </script> <a href="/next">Next</a>"#,
             &page_url,
         );
 
@@ -150,6 +154,7 @@ mod tests {
             vec![r#"{"@type":"WebPage"}"#]
         );
         assert_eq!(page.metadata.title, "Page metadata");
+        assert_eq!(page.author, "Fixture Author");
         assert_eq!(page.metadata.canonical_url, "https://example.com/canonical");
         assert_eq!(page.social_metadata.open_graph["og:title"], "OG title");
         assert_eq!(page.social_metadata.twitter["twitter:card"], "summary");
