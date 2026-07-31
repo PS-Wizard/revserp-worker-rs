@@ -7,7 +7,7 @@ mod crawler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let root = "https://revketer.ai/".parse()?;
+    let root = "https://web-scraping.dev/".parse()?;
     let crawler = Crawler::new(FetchClient::new(), 1, 70, 10)?;
     let crawl_started = Instant::now();
     let report = crawler.crawl(root).await;
