@@ -33,10 +33,33 @@ async fn main() -> Result<()> {
         println!("  body download: {:?}", page.fetch.body_download_time);
         println!("  total fetch: {fetch_time:?}");
         println!("  page extraction: {:?}", page.fetch.page_extraction_time);
+        println!("  title: {:?}", page.fetch.metadata.title);
+        println!(
+            "  meta description: {:?}",
+            page.fetch.metadata.meta_description
+        );
+        println!("  canonical: {:?}", page.fetch.metadata.canonical_url);
+        println!("  language: {:?}", page.fetch.metadata.lang);
+        println!("  viewport: {:?}", page.fetch.metadata.viewport);
+        println!("  robots: {:?}", page.fetch.metadata.robots);
+        println!("  open graph: {:?}", page.fetch.social_metadata.open_graph);
+        println!("  twitter: {:?}", page.fetch.social_metadata.twitter);
+        for json_ld_block in &page.fetch.structured_data.json_ld_blocks {
+            println!("  JSON-LD: {json_ld_block}");
+        }
         println!(
             "  visible text ({} bytes): {:?}",
             page.fetch.visible_text.len(),
             visible_text_preview
+        );
+        println!("  image count: {}", page.fetch.images.count);
+        println!(
+            "  images without alt: {}",
+            page.fetch.images.without_alt_count
+        );
+        println!(
+            "  images without dimensions: {}",
+            page.fetch.images.without_dimensions_count
         );
         println!("  h1 count: {}", page.fetch.headings.h1_count);
         for heading in page.fetch.headings.outline {

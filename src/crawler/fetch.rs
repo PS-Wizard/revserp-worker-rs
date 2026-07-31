@@ -5,13 +5,20 @@ use reqwest::{StatusCode, Url};
 
 use crate::crawler::{
     client::FetchClient,
-    extract::{ExtractedPage, ParsedHeadings, ParsedLink, extract_page},
+    extract::{
+        ExtractedPage, ParsedHeadings, ParsedImages, ParsedLink, ParsedMetadata,
+        ParsedSocialMetadata, ParsedStructuredData, extract_page,
+    },
 };
 
 pub struct FetchResult {
     pub status_code: StatusCode,
     pub links: Vec<ParsedLink>,
     pub headings: ParsedHeadings,
+    pub metadata: ParsedMetadata,
+    pub social_metadata: ParsedSocialMetadata,
+    pub structured_data: ParsedStructuredData,
+    pub images: ParsedImages,
     pub visible_text: String,
     pub time_to_headers: Duration,
     pub body_download_time: Duration,
@@ -58,6 +65,10 @@ pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchRes
         status_code,
         links: extracted_page.links,
         headings: extracted_page.headings,
+        metadata: extracted_page.metadata,
+        social_metadata: extracted_page.social_metadata,
+        structured_data: extracted_page.structured_data,
+        images: extracted_page.images,
         visible_text: extracted_page.visible_text,
         time_to_headers,
         body_download_time,

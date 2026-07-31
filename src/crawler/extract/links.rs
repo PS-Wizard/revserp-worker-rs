@@ -1,7 +1,7 @@
 use reqwest::Url;
 use scraper::{Html, Selector};
 
-use super::normalize_text;
+use super::{normalize_text, normalize_url};
 
 static LINK_SELECTOR: std::sync::LazyLock<Selector> = std::sync::LazyLock::new(|| {
     Selector::parse("a[href]").expect("hardcoded link selector must be valid")
@@ -32,45 +32,6 @@ pub(super) fn extract_links(document: &Html, page_url: &Url) -> Vec<ParsedLink> 
             })
         })
         .collect()
-}
-
-fn normalize_url(href: &str, page_url: &Url) -> Option<Url> {
-    let href = href.trim();
-    if href.is_empty() {
-        return None;
-    }
-
-    if let Some(authority) = explicit_authority(href) {
-        let host = authority.split(['/', '?', '#']).next().unwrap_or_default();
-        if host.is_empty() {
-            return None;
-        }
-    }
-
-    let mut target_url = page_url.join(href).ok()?;
-    if !matches!(target_url.scheme(), "http" | "https") || target_url.host_str().is_none() {
-        return None;
-    }
-
-    target_url.set_fragment(None);
-    if target_url.path().is_empty() {
-        target_url.set_path("/");
-    }
-    Some(target_url)
-}
-
-fn explicit_authority(href: &str) -> Option<&str> {
-    if let Some(authority) = href.strip_prefix("//") {
-        return Some(authority);
-    }
-
-    for scheme in ["http:", "https:"] {
-        if href.get(..scheme.len())?.eq_ignore_ascii_case(scheme) {
-            return Some(href[scheme.len()..].strip_prefix("//").unwrap_or_default());
-        }
-    }
-
-    None
 }
 
 fn is_internal(page_url: &Url, target_url: &Url) -> bool {
