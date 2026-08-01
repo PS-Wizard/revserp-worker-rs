@@ -103,9 +103,10 @@ pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchRes
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
+    use std::io::{ErrorKind, Read, Write};
     use std::net::TcpListener;
     use std::thread;
+    use std::time::Instant;
 
     use super::*;
 
@@ -202,6 +203,58 @@ mod tests {
         assert_eq!(
             result.page.as_ref().unwrap().links[0].target_url.as_str(),
             expected
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_host_redirect_is_rejected_before_destination_request() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error)
+                        if error.kind() == ErrorKind::WouldBlock && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("accept initial request: {error}"),
+                }
+            };
+            let mut request = [0; 1024];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/destination\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                address.port()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            let deadline = Instant::now() + Duration::from_millis(250);
+            loop {
+                match listener.accept() {
+                    Ok(_) => panic!("redirect destination was requested"),
+                    Err(error)
+                        if error.kind() == ErrorKind::WouldBlock && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("accept redirect destination: {error}"),
+                }
+            }
+        });
+        let url = Url::parse(&format!("http://localhost:{}/start", address.port())).unwrap();
+        let error = match fetch_url(&url, &FetchClient::new_for_tests()).await {
+            Ok(_) => panic!("cross-host redirect was accepted"),
+            Err(error) => error,
+        };
+        server.join().unwrap();
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.to_string().contains("redirect crosses crawler host"))
         );
     }
 

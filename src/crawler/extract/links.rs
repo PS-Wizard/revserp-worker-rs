@@ -1,3 +1,4 @@
+use crate::crawler::scope::hosts_equivalent;
 use reqwest::Url;
 use scraper::{Html, Selector};
 
@@ -35,18 +36,7 @@ pub(super) fn extract_links(document: &Html, page_url: &Url) -> Vec<ParsedLink> 
 }
 
 fn is_internal(page_url: &Url, target_url: &Url) -> bool {
-    match (page_url.host_str(), target_url.host_str()) {
-        (Some(page_host), Some(target_host)) => {
-            strip_one_www(page_host).eq_ignore_ascii_case(strip_one_www(target_host))
-        }
-        _ => false,
-    }
-}
-
-fn strip_one_www(host: &str) -> &str {
-    host.get(4..)
-        .filter(|_| host[..4].eq_ignore_ascii_case("www."))
-        .unwrap_or(host)
+    hosts_equivalent(page_url, target_url)
 }
 
 #[cfg(test)]

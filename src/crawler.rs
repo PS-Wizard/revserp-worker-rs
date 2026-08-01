@@ -2,6 +2,7 @@ mod client;
 mod extract;
 mod fetch;
 mod runner;
+mod scope;
 mod ssrf;
 
 pub use client::FetchClient;

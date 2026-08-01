@@ -1,6 +1,9 @@
 use reqwest::{Client, ClientBuilder, Url, redirect::Policy};
 
-use super::ssrf::{SafeResolver, validate_url};
+use super::{
+    scope::hosts_equivalent,
+    ssrf::{SafeResolver, validate_url},
+};
 
 // 10 MiB
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
@@ -25,10 +28,17 @@ impl FetchClient {
         let redirect_limit = Policy::limited(10);
         let client = ClientBuilder::new()
             .redirect(Policy::custom(move |attempt| {
-                match validate_url(attempt.url(), allow_loopback) {
-                    Ok(()) => redirect_limit.redirect(attempt),
-                    Err(error) => attempt.error(error),
+                if let Err(error) = validate_url(attempt.url(), allow_loopback) {
+                    return attempt.error(error);
                 }
+                if !attempt
+                    .previous()
+                    .first()
+                    .is_some_and(|initial_url| hosts_equivalent(initial_url, attempt.url()))
+                {
+                    return attempt.error("redirect crosses crawler host");
+                }
+                redirect_limit.redirect(attempt)
             }))
             .dns_resolver(SafeResolver::new(allow_loopback))
             .gzip(true)
