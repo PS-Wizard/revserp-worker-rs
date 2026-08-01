@@ -16,11 +16,22 @@ pub struct FetchResult {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub retry_after: Option<String>,
-
     pub page: Option<ExtractedPage>,
     pub time_to_headers: Duration,
     pub body_download_time: Duration,
     pub page_extraction_time: Duration,
+}
+
+pub(super) struct RawFetchResponse {
+    pub(super) status_code: StatusCode,
+    final_url: Url,
+    content_type: Option<String>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    retry_after: Option<String>,
+    pub(super) body: Vec<u8>,
+    time_to_headers: Duration,
+    body_download_time: Duration,
 }
 
 fn response_header(
@@ -42,7 +53,11 @@ fn is_html_content_type(content_type: &str) -> bool {
         .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/html"))
 }
 
-pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchResult> {
+pub(super) async fn fetch_raw(
+    url: &Url,
+    fetch_client: &FetchClient,
+    max_body_size: usize,
+) -> Result<RawFetchResponse> {
     fetch_client
         .validate_url(url)
         .with_context(|| format!("refusing to fetch URL: {url}"))?;
@@ -62,7 +77,6 @@ pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchRes
     let retry_after = response_header(&response, reqwest::header::RETRY_AFTER);
     let body_start = Instant::now();
     let mut body = Vec::new();
-    let max_body_size = fetch_client.max_body_size;
     while let Some(chunk) = response
         .chunk()
         .await
@@ -76,27 +90,47 @@ pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchRes
         body.extend_from_slice(&chunk);
     }
     let body_download_time = body_start.elapsed();
-    let response_size = body.len();
-    let (page, page_extraction_time) =
-        if status_code.is_success() && content_type.as_deref().is_some_and(is_html_content_type) {
-            let extraction_start = Instant::now();
-            let page = extract_page(&body, &final_url);
-            (Some(page), extraction_start.elapsed())
-        } else {
-            (None, Duration::ZERO)
-        };
 
-    Ok(FetchResult {
+    Ok(RawFetchResponse {
         status_code,
         final_url,
         content_type,
-        response_size,
         etag,
         last_modified,
         retry_after,
-        page,
+        body,
         time_to_headers,
         body_download_time,
+    })
+}
+
+pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchResult> {
+    let raw = fetch_raw(url, fetch_client, fetch_client.max_body_size).await?;
+    let response_size = raw.body.len();
+    let (page, page_extraction_time) = if raw.status_code.is_success()
+        && raw
+            .content_type
+            .as_deref()
+            .is_some_and(is_html_content_type)
+    {
+        let extraction_start = Instant::now();
+        let page = extract_page(&raw.body, &raw.final_url);
+        (Some(page), extraction_start.elapsed())
+    } else {
+        (None, Duration::ZERO)
+    };
+
+    Ok(FetchResult {
+        status_code: raw.status_code,
+        final_url: raw.final_url,
+        content_type: raw.content_type,
+        response_size,
+        etag: raw.etag,
+        last_modified: raw.last_modified,
+        retry_after: raw.retry_after,
+        page,
+        time_to_headers: raw.time_to_headers,
+        body_download_time: raw.body_download_time,
         page_extraction_time,
     })
 }

@@ -4,7 +4,7 @@ use anyhow::{Error, Result, ensure};
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use reqwest::Url;
 
-use crate::crawler::{FetchClient, fetch::FetchResult, fetch_url};
+use crate::crawler::{FetchClient, fetch::FetchResult, fetch_url, sitemap::discover_sitemap_urls};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct CrawlJob {
@@ -67,7 +67,19 @@ impl Crawler {
     pub async fn crawl(&self, root: Url) -> CrawlReport {
         let mut queue = VecDeque::from([CrawlJob::new(root.clone())]);
         let mut in_flight = FuturesUnordered::new();
-        let mut seen = HashSet::from([root]);
+        let mut seen = HashSet::from([root.clone()]);
+        if self.max_pages > 1 {
+            for url in
+                discover_sitemap_urls(&self.fetch_client, &root, self.max_pages - seen.len()).await
+            {
+                if seen.len() >= self.max_pages {
+                    break;
+                }
+                if seen.insert(url.clone()) {
+                    queue.push_back(CrawlJob { url, depth: 0 });
+                }
+            }
+        }
         let mut report = CrawlReport::default();
 
         while !queue.is_empty() || !in_flight.is_empty() {
@@ -171,6 +183,7 @@ mod tests {
         let measured_active_requests = Arc::clone(&active_requests);
         let max_active_requests = Arc::new(AtomicUsize::new(0));
         let measured_max_active_requests = Arc::clone(&max_active_requests);
+        let origin = format!("http://{address}");
 
         let handle = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -192,12 +205,18 @@ mod tests {
                 assert!(bytes_read > 0);
                 let request = String::from_utf8_lossy(&request[..bytes_read]);
                 let path = request.split_whitespace().nth(1).unwrap().to_owned();
-                recorded_requests.lock().unwrap().push(path.clone());
-                handled += 1;
-
-                let route = *routes.get(path.as_str()).unwrap();
+                let auxiliary = matches!(path.as_str(), "/robots.txt" | "/sitemap.xml");
+                if !auxiliary {
+                    recorded_requests.lock().unwrap().push(path.clone());
+                    handled += 1;
+                }
+                let route = routes.get(path.as_str()).copied().unwrap_or_else(|| {
+                    assert!(auxiliary, "unexpected route: {path}");
+                    route(404, "")
+                });
                 let active_requests = Arc::clone(&measured_active_requests);
                 let max_active_requests = Arc::clone(&measured_max_active_requests);
+                let origin = origin.clone();
                 handlers.push(thread::spawn(move || {
                     let measure_concurrency = !route.delay.is_zero();
                     if measure_concurrency {
@@ -212,12 +231,13 @@ mod tests {
                         } else {
                             "Not Found"
                         };
+                        let body = route.body.replace("{origin}", &origin);
                         let response = format!(
                             "HTTP/1.1 {} {}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             route.status,
                             reason,
-                            route.body.len(),
-                            route.body
+                            body.len(),
+                            body
                         );
                         stream.write_all(response.as_bytes()).unwrap();
                     }
@@ -340,6 +360,43 @@ mod tests {
 
         assert_eq!(report.pages.len(), 4);
         assert_eq!(max_active_requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn sitemap_seeds_are_depth_zero_deduplicated_and_page_limited() {
+        let routes = HashMap::from([
+            (
+                "/sitemap.xml",
+                route(
+                    200,
+                    r#"<urlset><url><loc>{origin}/a</loc></url><url><loc>{origin}/b</loc></url><url><loc>{origin}/c</loc></url><url><loc>https://sub.example.com/no</loc></url></urlset>"#,
+                ),
+            ),
+            (
+                "/",
+                route(200, r#"<a href="/a">a</a><a href="/link">link</a>"#),
+            ),
+            ("/a", route(200, "done")),
+            ("/b", route(200, "done")),
+            ("/c", route(200, "done")),
+            ("/link", route(200, "done")),
+        ]);
+        let (root, requests, _, server) = server(routes, 5);
+        let crawler = Crawler::new(FetchClient::new_for_tests(), 2, 5, 1).unwrap();
+
+        let report = crawler.crawl(root).await;
+        server.join().unwrap();
+
+        assert_eq!(*requests.lock().unwrap(), ["/", "/a", "/b", "/c", "/link"]);
+        assert_eq!(report.pages.len(), 5);
+        assert_eq!(
+            report
+                .pages
+                .iter()
+                .map(|page| (page.job.url.path(), page.job.depth))
+                .collect::<Vec<_>>(),
+            [("/", 0), ("/a", 0), ("/b", 0), ("/c", 0), ("/link", 1)]
+        );
     }
 
     #[test]

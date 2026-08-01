@@ -17,3 +17,5 @@ tokio = {
     version = "1.53.1",
     features = ["macros", "rt-multi-thread", "net"],
 }
+quick-xml = "0.38.3"
+flate2 = "1.1.9"

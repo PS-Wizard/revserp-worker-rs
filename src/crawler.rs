@@ -3,6 +3,7 @@ mod extract;
 mod fetch;
 mod runner;
 mod scope;
+mod sitemap;
 mod ssrf;
 
 pub use client::FetchClient;
