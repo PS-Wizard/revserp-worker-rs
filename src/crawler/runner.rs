@@ -89,8 +89,10 @@ impl Crawler {
 
             match result {
                 Ok(fetch) => {
-                    if fetch.status_code.is_success() && job.depth < self.max_depth {
-                        for link in &fetch.links {
+                    if job.depth < self.max_depth
+                        && let Some(page) = fetch.page.as_ref()
+                    {
+                        for link in &page.links {
                             if !link.internal {
                                 continue;
                             }
@@ -255,7 +257,7 @@ mod tests {
             ("/deep", route(200, "done")),
         ]);
         let (root, requests, _, server) = server(routes, 4);
-        let crawler = Crawler::new(FetchClient::new(), 2, 10, 1).unwrap();
+        let crawler = Crawler::new(FetchClient::new_for_tests(), 2, 10, 1).unwrap();
 
         let report = crawler.crawl(root).await;
         server.join().unwrap();
@@ -285,7 +287,7 @@ mod tests {
             ("/a", route(200, "done")),
         ]);
         let (root, requests, _, server) = server(routes, 2);
-        let crawler = Crawler::new(FetchClient::new(), 2, 2, 1).unwrap();
+        let crawler = Crawler::new(FetchClient::new_for_tests(), 2, 2, 1).unwrap();
 
         let report = crawler.crawl(root).await;
         server.join().unwrap();
@@ -305,7 +307,7 @@ mod tests {
             ("/ok", route(200, "done")),
         ]);
         let (root, requests, _, server) = server(routes, 3);
-        let crawler = Crawler::new(FetchClient::new(), 1, 3, 1).unwrap();
+        let crawler = Crawler::new(FetchClient::new_for_tests(), 1, 3, 1).unwrap();
 
         let report = crawler.crawl(root).await;
         server.join().unwrap();
@@ -331,7 +333,7 @@ mod tests {
             ("/c", delayed_route("done")),
         ]);
         let (root, _, max_active_requests, server) = server(routes, 4);
-        let crawler = Crawler::new(FetchClient::new(), 1, 4, 2).unwrap();
+        let crawler = Crawler::new(FetchClient::new_for_tests(), 1, 4, 2).unwrap();
 
         let report = crawler.crawl(root).await;
         server.join().unwrap();

@@ -5,28 +5,47 @@ use reqwest::{StatusCode, Url};
 
 use crate::crawler::{
     client::FetchClient,
-    extract::{
-        ExtractedPage, ParsedHeadings, ParsedImages, ParsedLink, ParsedMetadata,
-        ParsedSocialMetadata, ParsedStructuredData, extract_page,
-    },
+    extract::{ExtractedPage, extract_page},
 };
 
 pub struct FetchResult {
     pub status_code: StatusCode,
-    pub links: Vec<ParsedLink>,
-    pub headings: ParsedHeadings,
-    pub metadata: ParsedMetadata,
-    pub social_metadata: ParsedSocialMetadata,
-    pub structured_data: ParsedStructuredData,
-    pub author: String,
-    pub images: ParsedImages,
-    pub visible_text: String,
+    pub final_url: Url,
+    pub content_type: Option<String>,
+    pub response_size: usize,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub retry_after: Option<String>,
+
+    pub page: Option<ExtractedPage>,
     pub time_to_headers: Duration,
     pub body_download_time: Duration,
     pub page_extraction_time: Duration,
 }
 
+fn response_header(
+    response: &reqwest::Response,
+    name: reqwest::header::HeaderName,
+) -> Option<String> {
+    response
+        .headers()
+        .get(name)?
+        .to_str()
+        .ok()
+        .map(str::to_owned)
+}
+
+fn is_html_content_type(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/html"))
+}
+
 pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchResult> {
+    fetch_client
+        .validate_url(url)
+        .with_context(|| format!("refusing to fetch URL: {url}"))?;
     let headers_start = Instant::now();
     let mut response = fetch_client
         .client
@@ -36,8 +55,12 @@ pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchRes
         .with_context(|| format!("failed to fetch URL: {url}"))?;
     let time_to_headers = headers_start.elapsed();
     let status_code = response.status();
+    let final_url = response.url().clone();
+    let content_type = response_header(&response, reqwest::header::CONTENT_TYPE);
+    let etag = response_header(&response, reqwest::header::ETAG);
+    let last_modified = response_header(&response, reqwest::header::LAST_MODIFIED);
+    let retry_after = response_header(&response, reqwest::header::RETRY_AFTER);
     let body_start = Instant::now();
-
     let mut body = Vec::new();
     let max_body_size = fetch_client.max_body_size;
     while let Some(chunk) = response
@@ -53,25 +76,25 @@ pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchRes
         body.extend_from_slice(&chunk);
     }
     let body_download_time = body_start.elapsed();
-
-    let extraction_start = Instant::now();
-    let extracted_page = if status_code.is_success() {
-        extract_page(&body, url)
-    } else {
-        ExtractedPage::default()
-    };
-    let page_extraction_time = extraction_start.elapsed();
+    let response_size = body.len();
+    let (page, page_extraction_time) =
+        if status_code.is_success() && content_type.as_deref().is_some_and(is_html_content_type) {
+            let extraction_start = Instant::now();
+            let page = extract_page(&body, &final_url);
+            (Some(page), extraction_start.elapsed())
+        } else {
+            (None, Duration::ZERO)
+        };
 
     Ok(FetchResult {
         status_code,
-        links: extracted_page.links,
-        headings: extracted_page.headings,
-        metadata: extracted_page.metadata,
-        social_metadata: extracted_page.social_metadata,
-        structured_data: extracted_page.structured_data,
-        author: extracted_page.author,
-        images: extracted_page.images,
-        visible_text: extracted_page.visible_text,
+        final_url,
+        content_type,
+        response_size,
+        etag,
+        last_modified,
+        retry_after,
+        page,
         time_to_headers,
         body_download_time,
         page_extraction_time,
@@ -125,13 +148,159 @@ mod tests {
         )
     }
 
+    fn server_with_response(
+        status_line: &'static str,
+        headers: &'static str,
+        body: &'static [u8],
+    ) -> (Url, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            let response = format!(
+                "{status_line}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        });
+        (
+            Url::parse(&format!("http://{address}/body")).unwrap(),
+            handle,
+        )
+    }
+
+    #[tokio::test]
+    async fn relative_links_resolve_against_redirect_destination() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for response in [
+                "HTTP/1.1 302 Found\r\nLocation: /redirected/page\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 25\r\nConnection: close\r\n\r\n<a href=\"child\">child</a>",
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 1024];
+                assert!(stream.read(&mut request).unwrap() > 0);
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let url = Url::parse(&format!("http://{address}/start")).unwrap();
+
+        let result = fetch_url(&url, &FetchClient::new_for_tests())
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(
+            result.final_url.as_str(),
+            format!("http://{address}/redirected/page")
+        );
+        let expected = format!("http://{address}/redirected/child");
+        assert_eq!(
+            result.page.as_ref().unwrap().links[0].target_url.as_str(),
+            expected
+        );
+    }
+
+    #[tokio::test]
+    async fn response_metadata_preserves_headers_and_decoded_size() {
+        let gzip_body = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff\x4b\x4c\xa4\x3d\x00\x00\x64\x7a\x70\xaf\x64\x00\x00\x00";
+        let (url, server) = server_with_response(
+            "HTTP/1.1 200 OK",
+            "Content-Type: Text/HTML; charset=utf-8\r\nContent-Encoding: gzip\r\nETag: \"fixture-etag\"\r\nLast-Modified: Wed, 21 Oct 2015 07:28:00 GMT\r\nRetry-After: 42\r\n",
+            gzip_body,
+        );
+        let result = fetch_url(&url, &FetchClient::new_for_tests())
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(result.final_url, url);
+        assert_eq!(
+            result.content_type.as_deref(),
+            Some("Text/HTML; charset=utf-8")
+        );
+        assert_eq!(result.etag.as_deref(), Some("\"fixture-etag\""));
+        assert_eq!(
+            result.last_modified.as_deref(),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT")
+        );
+        assert_eq!(result.retry_after.as_deref(), Some("42"));
+        assert_eq!(result.response_size, 100);
+    }
+
+    #[tokio::test]
+    async fn html_content_type_with_parameters_extracts_page() {
+        let (url, server) = server_with_response(
+            "HTTP/1.1 200 OK",
+            "Content-Type:  text/HTML ; charset=utf-8\r\n",
+            b"<h1>fixture</h1>",
+        );
+        let result = fetch_url(&url, &FetchClient::new_for_tests())
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert!(result.page.is_some());
+    }
+
+    #[tokio::test]
+    async fn non_html_content_type_does_not_extract_page() {
+        let (url, server) = server_with_response(
+            "HTTP/1.1 200 OK",
+            "Content-Type: text/plain\r\n",
+            b"<h1>not html</h1>",
+        );
+        let result = fetch_url(&url, &FetchClient::new_for_tests())
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert!(result.page.is_none());
+        assert_eq!(result.page_extraction_time, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn non_success_html_does_not_extract_page() {
+        let (url, server) = server_with_response(
+            "HTTP/1.1 404 Not Found",
+            "Content-Type: text/html\r\n",
+            b"<h1>not found</h1>",
+        );
+        let result = fetch_url(&url, &FetchClient::new_for_tests())
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert!(result.page.is_none());
+        assert_eq!(result.page_extraction_time, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn absent_response_headers_are_none() {
+        let (url, server) = server_with_response("HTTP/1.1 200 OK", "", b"body");
+        let result = fetch_url(&url, &FetchClient::new_for_tests())
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert!(result.content_type.is_none());
+        assert!(result.etag.is_none());
+        assert!(result.last_modified.is_none());
+        assert!(result.retry_after.is_none());
+        assert!(result.page.is_none());
+    }
+
     async fn fetch_with_limit(
         body: &'static [u8],
         content_encoding: Option<&'static str>,
         limit: usize,
     ) -> Result<()> {
         let (url, server) = server(body, content_encoding);
-        let mut fetch_client = FetchClient::new();
+        let mut fetch_client = FetchClient::new_for_tests();
         fetch_client.max_body_size = limit;
         let result = fetch_url(&url, &fetch_client).await;
         server.join().unwrap();
@@ -146,7 +315,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::from_millis(100),
         );
-        let fetch_client = FetchClient::new();
+        let fetch_client = FetchClient::new_for_tests();
         let result = fetch_url(&url, &fetch_client).await.unwrap();
         server.join().unwrap();
 
