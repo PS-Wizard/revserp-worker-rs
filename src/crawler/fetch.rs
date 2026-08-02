@@ -6,6 +6,8 @@ use reqwest::{StatusCode, Url};
 use crate::crawler::{
     client::FetchClient,
     extract::{ExtractedPage, extract_page},
+    renderer::{RenderPool, needs_js_render},
+    scope::hosts_equivalent,
 };
 
 pub struct FetchResult {
@@ -17,6 +19,8 @@ pub struct FetchResult {
     pub last_modified: Option<String>,
     pub retry_after: Option<String>,
     pub page: Option<ExtractedPage>,
+    pub javascript_rendered: bool,
+    pub javascript_render_time: Duration,
     pub time_to_headers: Duration,
     pub body_download_time: Duration,
     pub page_extraction_time: Duration,
@@ -105,8 +109,18 @@ pub(super) async fn fetch_raw(
 }
 
 pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchResult> {
+    fetch_url_with_renderer(url, fetch_client, None).await
+}
+
+pub(crate) async fn fetch_url_with_renderer(
+    url: &Url,
+    fetch_client: &FetchClient,
+    renderer: Option<&RenderPool>,
+) -> Result<FetchResult> {
     let raw = fetch_raw(url, fetch_client, fetch_client.max_body_size).await?;
     let response_size = raw.body.len();
+    let mut javascript_rendered = false;
+    let mut javascript_render_time = Duration::ZERO;
     let (page, page_extraction_time) = if raw.status_code.is_success()
         && raw
             .content_type
@@ -114,8 +128,32 @@ pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchRes
             .is_some_and(is_html_content_type)
     {
         let extraction_start = Instant::now();
-        let page = extract_page(&raw.body, &raw.final_url);
-        (Some(page), extraction_start.elapsed())
+        let raw_page = extract_page(&raw.body, &raw.final_url);
+        let mut page_extraction_time = extraction_start.elapsed();
+        let page = if let Some(renderer) = renderer
+            .filter(|renderer| needs_js_render(&raw.final_url, &raw.body, &raw_page).needs_render)
+        {
+            let render_start = Instant::now();
+            let rendered_result = renderer.render(&raw.final_url).await;
+            javascript_render_time = render_start.elapsed();
+            match rendered_result {
+                Ok(rendered)
+                    if rendered.status_code.is_success()
+                        && fetch_client.validate_url(&rendered.final_url).is_ok()
+                        && hosts_equivalent(&raw.final_url, &rendered.final_url) =>
+                {
+                    let rendered_extraction_start = Instant::now();
+                    let rendered_page = extract_page(&rendered.html, &rendered.final_url);
+                    page_extraction_time += rendered_extraction_start.elapsed();
+                    javascript_rendered = true;
+                    rendered_page
+                }
+                _ => raw_page,
+            }
+        } else {
+            raw_page
+        };
+        (Some(page), page_extraction_time)
     } else {
         (None, Duration::ZERO)
     };
@@ -129,6 +167,8 @@ pub async fn fetch_url(url: &Url, fetch_client: &FetchClient) -> Result<FetchRes
         last_modified: raw.last_modified,
         retry_after: raw.retry_after,
         page,
+        javascript_rendered,
+        javascript_render_time,
         time_to_headers: raw.time_to_headers,
         body_download_time: raw.body_download_time,
         page_extraction_time,

@@ -1,17 +1,21 @@
 // TODO: Need to remove this at the end not now
 #![allow(dead_code, unused_variables)]
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
-use crawler::{Crawler, FetchClient};
+use crawler::{Crawler, FetchClient, LightPandaSpawnConfig, RenderPool};
 
 mod crawler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let root = "https://revketer.ai".parse()?;
-    let crawler = Crawler::new(FetchClient::new(), 1, 70, 10)?;
+    let renderer = Arc::new(RenderPool::new(LightPandaSpawnConfig::new()));
+    let crawler = Crawler::new(FetchClient::new(), 10, 900, 21)?.with_renderer(renderer);
     let crawl_started = Instant::now();
     let report = crawler.crawl(root).await;
     let crawl_wall_time = crawl_started.elapsed();
@@ -21,6 +25,8 @@ async fn main() -> Result<()> {
     let mut total_time_to_headers = Duration::ZERO;
     let mut total_body_download_time = Duration::ZERO;
     let mut total_page_extraction_time = Duration::ZERO;
+    let mut total_javascript_render_time = Duration::ZERO;
+    let mut javascript_rendered_pages = 0;
     let mut total_response_size = 0;
     let mut total_visible_text_bytes = 0;
 
@@ -29,6 +35,10 @@ async fn main() -> Result<()> {
         total_time_to_headers += page.fetch.time_to_headers;
         total_body_download_time += page.fetch.body_download_time;
         total_page_extraction_time += page.fetch.page_extraction_time;
+        total_javascript_render_time += page.fetch.javascript_render_time;
+        if page.fetch.javascript_rendered {
+            javascript_rendered_pages += 1;
+        }
         total_response_size += page.fetch.response_size;
 
         println!("depth {}: {}", page.job.depth, page.job.url);
@@ -43,7 +53,9 @@ async fn main() -> Result<()> {
         println!("  body download: {:?}", page.fetch.body_download_time);
         println!("  total fetch: {fetch_time:?}");
         println!("  page extraction: {:?}", page.fetch.page_extraction_time);
-        
+        println!("  Lightpanda rendered: {}", page.fetch.javascript_rendered);
+        println!("  Lightpanda time: {:?}", page.fetch.javascript_render_time);
+
         if let Some(page) = page.fetch.page.as_ref() {
             total_visible_text_bytes += page.visible_text.len();
             let visible_text_preview: String = page.visible_text.chars().collect();
@@ -100,6 +112,8 @@ async fn main() -> Result<()> {
     println!("  summed body download: {total_body_download_time:?}");
     println!("  summed fetch: {total_fetch_time:?}");
     println!("  summed page extraction: {total_page_extraction_time:?}");
+    println!("  Lightpanda-rendered pages: {javascript_rendered_pages}");
+    println!("  summed Lightpanda time: {total_javascript_render_time:?}");
     println!("  summed measured work: {total_measured_work:?}");
     println!("  crawl wall time: {crawl_wall_time:?}");
 

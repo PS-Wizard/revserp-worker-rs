@@ -1,10 +1,17 @@
-use std::collections::{HashSet, VecDeque};
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+};
 
 use anyhow::{Error, Result, ensure};
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use reqwest::Url;
 
-use crate::crawler::{FetchClient, fetch::FetchResult, fetch_url, sitemap::discover_sitemap_urls};
+use crate::crawler::{
+    FetchClient, RenderPool,
+    fetch::{FetchResult, fetch_url_with_renderer},
+    sitemap::discover_sitemap_urls,
+};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct CrawlJob {
@@ -30,6 +37,7 @@ pub struct CrawlReport {
 
 pub struct Crawler {
     fetch_client: FetchClient,
+    renderer: Option<Arc<RenderPool>>,
     max_depth: usize,
     max_pages: usize,
     max_concurrency: usize,
@@ -58,10 +66,16 @@ impl Crawler {
         );
         Ok(Self {
             fetch_client,
+            renderer: None,
             max_depth,
             max_pages,
             max_concurrency,
         })
+    }
+
+    pub fn with_renderer(mut self, renderer: Arc<RenderPool>) -> Self {
+        self.renderer = Some(renderer);
+        self
     }
 
     pub async fn crawl(&self, root: Url) -> CrawlReport {
@@ -88,9 +102,9 @@ impl Crawler {
                     break;
                 };
                 let fetch_client = &self.fetch_client;
-
+                let renderer = self.renderer.as_deref();
                 in_flight.push(async move {
-                    let result = fetch_url(&job.url, fetch_client).await;
+                    let result = fetch_url_with_renderer(&job.url, fetch_client, renderer).await;
                     (job, result)
                 });
             }
