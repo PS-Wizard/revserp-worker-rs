@@ -16,7 +16,9 @@ pub struct ParsedHeading {
 
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct ParsedHeadings {
+    pub primary_h1: String,
     pub h1_count: usize,
+    pub h2_count: usize,
     pub outline: Vec<ParsedHeading>,
 }
 
@@ -34,11 +36,18 @@ pub(super) fn extract_headings(document: &Html) -> ParsedHeadings {
             _ => continue,
         };
 
-        if level == 1 {
-            headings.h1_count += 1;
+        let text = normalize_text(heading.text());
+        match level {
+            1 => {
+                if headings.h1_count == 0 {
+                    headings.primary_h1 = text.clone();
+                }
+                headings.h1_count += 1;
+            }
+            2 => headings.h2_count += 1,
+            _ => {}
         }
 
-        let text = normalize_text(heading.text());
         if !text.is_empty() {
             headings.outline.push(ParsedHeading { level, text });
         }
@@ -90,15 +99,17 @@ mod tests {
     }
 
     #[test]
-    fn counts_empty_h1_elements_but_omits_empty_outline_entries() {
-        let headings = extract("<h1>First</h1><h1> </h1><h2></h2>");
+    fn counts_empty_headings_and_preserves_an_empty_primary_h1() {
+        let headings = extract("<h1> </h1><h1>Second</h1><h2></h2>");
 
+        assert!(headings.primary_h1.is_empty());
         assert_eq!(headings.h1_count, 2);
+        assert_eq!(headings.h2_count, 1);
         assert_eq!(
             headings.outline,
             [ParsedHeading {
                 level: 1,
-                text: "First".to_owned(),
+                text: "Second".to_owned(),
             }]
         );
     }

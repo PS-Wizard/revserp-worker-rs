@@ -1,5 +1,6 @@
 mod client;
 mod extract;
+pub(crate) mod facts;
 mod fetch;
 mod renderer;
 mod runner;

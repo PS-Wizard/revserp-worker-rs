@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::Result;
 use crawler::{Crawler, FetchClient, LightPandaSpawnConfig, RenderPool};
+mod issues;
 
 mod crawler;
 
