@@ -6,7 +6,7 @@ use super::{
 };
 
 // 10 MiB
-const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+pub const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 pub struct FetchClient {
     pub(super) client: Client,

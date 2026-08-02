@@ -1,3 +1,6 @@
+// TODO: Need to remove this at the end not now
+#![allow(dead_code, unused_variables)]
+
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -40,7 +43,7 @@ async fn main() -> Result<()> {
         println!("  body download: {:?}", page.fetch.body_download_time);
         println!("  total fetch: {fetch_time:?}");
         println!("  page extraction: {:?}", page.fetch.page_extraction_time);
-
+        
         if let Some(page) = page.fetch.page.as_ref() {
             total_visible_text_bytes += page.visible_text.len();
             let visible_text_preview: String = page.visible_text.chars().collect();
