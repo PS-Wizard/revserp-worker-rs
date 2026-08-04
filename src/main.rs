@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::Result;
-use crawler::{Crawler, FetchClient, LightPandaSpawnConfig, RenderPool};
+use crawler::{Crawler, FetchClient, LightPandaSpawnConfig, RenderPool, facts::CrawlFacts};
 mod issues;
 
 mod crawler;
@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     let mut total_response_size = 0;
     let mut total_visible_text_bytes = 0;
 
-    for page in report.pages {
+    for page in &report.pages {
         let fetch_time = page.fetch.time_to_headers + page.fetch.body_download_time;
         total_time_to_headers += page.fetch.time_to_headers;
         total_body_download_time += page.fetch.body_download_time;
@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    for failure in report.failures {
+    for failure in &report.failures {
         eprintln!(
             "failed depth {} {}: {:#}",
             failure.job.depth, failure.job.url, failure.error
@@ -117,6 +117,22 @@ async fn main() -> Result<()> {
     println!("  summed Lightpanda time: {total_javascript_render_time:?}");
     println!("  summed measured work: {total_measured_work:?}");
     println!("  crawl wall time: {crawl_wall_time:?}");
+
+    let facts = CrawlFacts::from(report);
+    let issues = issues::derive_issues(&facts);
+    println!("\nderived issues: {}", issues.len());
+    for issue in issues {
+        println!(
+            "  [{:?}/{} {:?}] {}: {}\n    {}\n    {}",
+            issue.issue_type.pillar(),
+            issue.issue_type.bucket(),
+            issue.severity,
+            issue.issue_type.id(),
+            issue.message,
+            issue.url,
+            issue.details,
+        );
+    }
 
     Ok(())
 }
