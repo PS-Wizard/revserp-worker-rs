@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use super::runner::CrawlReport;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct PageFact {
     // Crawl and response
     pub(crate) url: String,
@@ -11,6 +11,8 @@ pub(crate) struct PageFact {
     pub(crate) content_type: Option<String>,
     pub(crate) response_size: usize,
     pub(crate) response_time: Duration,
+    pub(crate) fetch_error: Option<String>,
+    pub(crate) soft_404: bool,
 
     // Metadata
     pub(crate) title: String,
@@ -66,14 +68,12 @@ impl From<CrawlReport> for CrawlFacts {
                 ]
             })
             .collect();
-        let mut pages = Vec::with_capacity(report.pages.len());
+        let mut pages = Vec::with_capacity(report.pages.len() + report.failures.len());
         let mut links = Vec::new();
 
         for crawled_page in report.pages {
             let fetch = crawled_page.fetch;
-            let Some(page) = fetch.page else {
-                continue;
-            };
+            let page = fetch.page.unwrap_or_default();
 
             let url = fetch.final_url.to_string();
             let external_link_count = page.links.iter().filter(|link| !link.internal).count();
@@ -94,6 +94,8 @@ impl From<CrawlReport> for CrawlFacts {
                 content_type: fetch.content_type,
                 response_size: fetch.response_size,
                 response_time: fetch.time_to_headers + fetch.body_download_time,
+                fetch_error: None,
+                soft_404: false,
                 title: page.metadata.title,
                 meta_description: page.metadata.meta_description,
                 author: page.author,
@@ -121,6 +123,13 @@ impl From<CrawlReport> for CrawlFacts {
             });
         }
 
+        pages.extend(report.failures.into_iter().map(|failure| PageFact {
+            url: failure.job.url.to_string(),
+            depth: failure.job.depth,
+            fetch_error: Some(format!("{:#}", failure.error)),
+            ..PageFact::default()
+        }));
+
         pages.sort_unstable_by(|left, right| left.url.cmp(&right.url));
         links.sort_unstable_by(|left, right| {
             left.source_url
@@ -140,7 +149,7 @@ mod tests {
     use crate::crawler::{
         extract::{ExtractedPage, ParsedHeadings, ParsedLink},
         fetch::FetchResult,
-        runner::{CrawlJob, CrawledPage},
+        runner::{CrawlFailure, CrawlJob, CrawledPage},
     };
 
     fn fetch_result(
@@ -166,10 +175,11 @@ mod tests {
     }
 
     #[test]
-    fn crawl_report_conversion_builds_page_and_resolved_link_facts() {
+    fn crawl_report_conversion_keeps_successful_broken_and_failed_pages() {
         let root = Url::parse("https://example.com/").unwrap();
         let target = Url::parse("https://example.com/missing").unwrap();
         let external = Url::parse("https://other.example/").unwrap();
+        let timeout = Url::parse("https://example.com/timeout").unwrap();
         let extracted_page = ExtractedPage {
             links: vec![
                 ParsedLink {
@@ -211,12 +221,18 @@ mod tests {
                     fetch: fetch_result(target.clone(), StatusCode::NOT_FOUND, None),
                 },
             ],
-            failures: Vec::new(),
+            failures: vec![CrawlFailure {
+                job: CrawlJob {
+                    url: timeout.clone(),
+                    depth: 4,
+                },
+                error: anyhow::anyhow!("request timed out"),
+            }],
         };
 
         let facts = CrawlFacts::from(report);
 
-        assert_eq!(facts.pages.len(), 1);
+        assert_eq!(facts.pages.len(), 3);
         let page = &facts.pages[0];
         assert_eq!(
             (
@@ -241,6 +257,35 @@ mod tests {
                 3,
                 1,
             )
+        );
+
+        let broken_page = facts
+            .pages
+            .iter()
+            .find(|page| page.url == target.as_str())
+            .unwrap();
+        assert_eq!(
+            (
+                broken_page.status_code,
+                broken_page.title.as_str(),
+                broken_page.fetch_error.as_deref(),
+                broken_page.soft_404,
+            ),
+            (404, "", None, false)
+        );
+
+        let failed_page = facts
+            .pages
+            .iter()
+            .find(|page| page.url == timeout.as_str())
+            .unwrap();
+        assert_eq!(
+            (
+                failed_page.status_code,
+                failed_page.fetch_error.as_deref(),
+                failed_page.soft_404,
+            ),
+            (0, Some("request timed out"), false)
         );
         assert_eq!(facts.links.len(), 1);
         assert_eq!(
