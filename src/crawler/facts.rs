@@ -42,6 +42,19 @@ pub(crate) struct PageFact {
     pub(crate) json_ld_blocks: Vec<String>,
 }
 
+impl PageFact {
+    pub(crate) fn is_healthy(&self) -> bool {
+        self.status_code < 400 && !self.soft_404 && self.fetch_error.is_none()
+    }
+
+    pub(crate) fn is_scoreable_content_type(&self) -> bool {
+        match self.content_type.as_deref().map(str::trim) {
+            None | Some("") => true,
+            Some(content_type) => content_type.to_ascii_lowercase().contains("text/html"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LinkFact {
     pub(crate) source_url: String,

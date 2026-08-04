@@ -18,6 +18,10 @@ pub(super) fn derive(facts: &CrawlFacts) -> Vec<DerivedIssue> {
 }
 
 fn derive_broken_page_issue(page: &PageFact) -> Option<DerivedIssue> {
+    if !page.is_scoreable_content_type() {
+        return None;
+    }
+
     if let Some(error) = &page.fetch_error {
         return Some(DerivedIssue::new(
             &page.url,
@@ -74,6 +78,10 @@ mod tests {
             status_code,
             fetch_error: fetch_error.map(str::to_owned),
             soft_404,
+            content_type: Some("text/html".to_owned()),
+            title: "Page".to_owned(),
+            primary_h1: "Page".to_owned(),
+            h1_count: 1,
             ..PageFact::default()
         }
     }
