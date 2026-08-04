@@ -3,6 +3,7 @@ use crate::crawler::facts::CrawlFacts;
 use super::DerivedIssue;
 
 mod broken_pages;
+mod content_quality;
 mod headings;
 mod serp_metadata;
 
@@ -15,6 +16,7 @@ pub(super) fn derive(facts: &CrawlFacts) -> Vec<DerivedIssue> {
     {
         issues.extend(serp_metadata::derive(page));
         issues.extend(headings::derive(page));
+        issues.extend(content_quality::derive(page));
     }
     issues
 }
