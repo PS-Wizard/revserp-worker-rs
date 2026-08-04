@@ -99,7 +99,7 @@ mod tests {
             links: Vec::new(),
         };
 
-        let issues = crate::issues::derive_issues(&facts);
+        let issues = derive(&facts);
 
         assert_eq!(
             issues
