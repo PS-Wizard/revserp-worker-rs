@@ -6,6 +6,7 @@ mod broken_pages;
 mod content_quality;
 mod headings;
 mod indexability;
+mod internal_linking;
 mod media_optimization;
 mod serp_metadata;
 mod technical_seo;
@@ -24,5 +25,6 @@ pub(super) fn derive(facts: &CrawlFacts) -> Vec<DerivedIssue> {
         issues.extend(headings::derive(page));
         issues.extend(content_quality::derive(page));
     }
+    issues.extend(internal_linking::derive(facts));
     issues
 }
