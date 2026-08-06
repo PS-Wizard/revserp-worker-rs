@@ -239,8 +239,8 @@ mod tests {
     }
     #[test]
     fn skips_heading_issues_for_broken_and_non_html_pages() {
-        let facts = crate::crawler::facts::CrawlFacts {
-            pages: vec![
+        let facts = crate::crawler::facts::CrawlFacts::new(
+            vec![
                 PageFact {
                     url: "https://example.com/broken".to_owned(),
                     status_code: 404,
@@ -253,8 +253,8 @@ mod tests {
                     ..PageFact::default()
                 },
             ],
-            links: Vec::new(),
-        };
+            Vec::new(),
+        );
 
         let issues = crate::issues::derive_issues(&facts);
         assert_eq!(issues.len(), 1);

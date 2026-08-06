@@ -66,6 +66,35 @@ pub(crate) struct LinkFact {
 pub(crate) struct CrawlFacts {
     pub(crate) pages: Vec<PageFact>,
     pub(crate) links: Vec<LinkFact>,
+    page_index: HashMap<String, usize>,
+}
+
+impl CrawlFacts {
+    pub(crate) fn new(mut pages: Vec<PageFact>, mut links: Vec<LinkFact>) -> Self {
+        pages.sort_unstable_by(|left, right| left.url.cmp(&right.url));
+        links.sort_unstable_by(|left, right| {
+            left.source_url
+                .cmp(&right.source_url)
+                .then_with(|| left.target_url.cmp(&right.target_url))
+        });
+        let page_index = pages
+            .iter()
+            .enumerate()
+            .map(|(index, page)| (page.url.trim().to_owned(), index))
+            .collect();
+
+        Self {
+            pages,
+            links,
+            page_index,
+        }
+    }
+
+    pub(crate) fn page_by_url(&self, url: &str) -> Option<&PageFact> {
+        self.page_index
+            .get(url.trim())
+            .map(|index| &self.pages[*index])
+    }
 }
 
 impl From<CrawlReport> for CrawlFacts {
@@ -143,14 +172,7 @@ impl From<CrawlReport> for CrawlFacts {
             ..PageFact::default()
         }));
 
-        pages.sort_unstable_by(|left, right| left.url.cmp(&right.url));
-        links.sort_unstable_by(|left, right| {
-            left.source_url
-                .cmp(&right.source_url)
-                .then_with(|| left.target_url.cmp(&right.target_url))
-        });
-
-        Self { pages, links }
+        Self::new(pages, links)
     }
 }
 
@@ -308,6 +330,33 @@ mod tests {
                 facts.links[0].target_status,
             ),
             (root.as_str(), target.as_str(), Some(404))
+        );
+    }
+
+    #[test]
+    fn crawl_facts_indexes_pages_by_url_after_sorting() {
+        let facts = CrawlFacts::new(
+            vec![
+                PageFact {
+                    url: "https://example.com/z".to_owned(),
+                    ..PageFact::default()
+                },
+                PageFact {
+                    url: "https://example.com/a".to_owned(),
+                    ..PageFact::default()
+                },
+            ],
+            Vec::new(),
+        );
+
+        assert_eq!(
+            (
+                facts.pages[0].url.as_str(),
+                facts
+                    .page_by_url(" https://example.com/z ")
+                    .map(|page| page.url.as_str()),
+            ),
+            ("https://example.com/a", Some("https://example.com/z")),
         );
     }
 }

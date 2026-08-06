@@ -88,16 +88,16 @@ mod tests {
 
     #[test]
     fn derives_one_issue_for_each_broken_page_and_ignores_healthy_pages() {
-        let facts = CrawlFacts {
-            pages: vec![
+        let facts = CrawlFacts::new(
+            vec![
                 page("fetch", 500, Some("request timed out"), true),
                 page("soft", 500, None, true),
                 page("server", 503, None, false),
                 page("client", 404, None, false),
                 page("healthy", 200, None, false),
             ],
-            links: Vec::new(),
-        };
+            Vec::new(),
+        );
 
         let issues = derive(&facts);
 
@@ -115,20 +115,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (
+                    "client",
+                    Pillar::Seo,
+                    "technical_seo",
+                    "client_error_status",
+                    Severity::High,
+                    "Page returned a client error",
+                ),
+                (
                     "fetch",
                     Pillar::Seo,
                     "technical_seo",
                     "fetch_failed",
                     Severity::High,
                     "Page could not be fetched",
-                ),
-                (
-                    "soft",
-                    Pillar::Seo,
-                    "technical_seo",
-                    "soft_404",
-                    Severity::High,
-                    "Page returns a not-found message with a success status",
                 ),
                 (
                     "server",
@@ -139,12 +139,12 @@ mod tests {
                     "Page returned a server error",
                 ),
                 (
-                    "client",
+                    "soft",
                     Pillar::Seo,
                     "technical_seo",
-                    "client_error_status",
+                    "soft_404",
                     Severity::High,
-                    "Page returned a client error",
+                    "Page returns a not-found message with a success status",
                 ),
             ]
         );
