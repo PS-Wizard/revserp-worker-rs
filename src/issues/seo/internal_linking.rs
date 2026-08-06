@@ -13,6 +13,11 @@ const ORPHAN_LIKE_PAGE: IssueType =
 const LOW_INTERNAL_LINKS_IN: IssueType =
     IssueType::new(Pillar::Seo, "internal_linking", "low_internal_links_in");
 const VERY_DEEP_PAGE: IssueType = IssueType::new(Pillar::Seo, "internal_linking", "very_deep_page");
+const INTERNAL_LINKS_TO_BROKEN_PAGES: IssueType = IssueType::new(
+    Pillar::Seo,
+    "internal_linking",
+    "internal_links_to_broken_pages",
+);
 
 const LOW_LINK_COUNT: usize = 2;
 const VERY_DEEP_DEPTH: usize = 4;
@@ -20,6 +25,7 @@ const VERY_DEEP_DEPTH: usize = 4;
 pub(super) fn derive(facts: &CrawlFacts) -> Vec<DerivedIssue> {
     let mut inbound_sources_by_target: HashMap<&str, HashSet<&str>> = HashMap::new();
     let mut outbound_targets_by_source: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut broken_targets_by_source: HashMap<&str, HashSet<&str>> = HashMap::new();
 
     for link in &facts.links {
         let source = link.source_url.trim();
@@ -35,6 +41,12 @@ pub(super) fn derive(facts: &CrawlFacts) -> Vec<DerivedIssue> {
             .entry(target)
             .or_default()
             .insert(source);
+        if link.target_status.is_some_and(|status| status >= 400) {
+            broken_targets_by_source
+                .entry(source)
+                .or_default()
+                .insert(target);
+        }
     }
 
     facts
@@ -95,6 +107,30 @@ pub(super) fn derive(facts: &CrawlFacts) -> Vec<DerivedIssue> {
                     Severity::Medium,
                     "Page is very deep in the crawl",
                     format!("Page was discovered at crawl depth {}.", page.depth),
+                ));
+            }
+
+            if let Some(broken_targets) = broken_targets_by_source.get(page.url.trim()) {
+                let mut targets = broken_targets.iter().copied().collect::<Vec<_>>();
+                targets.sort_unstable();
+                let mut shown_targets = targets
+                    .iter()
+                    .take(3)
+                    .map(|target| (*target).to_owned())
+                    .collect::<Vec<_>>();
+                if targets.len() > 3 {
+                    shown_targets.push(format!("and {} more", targets.len() - 3));
+                }
+                issues.push(DerivedIssue::new(
+                    &page.url,
+                    INTERNAL_LINKS_TO_BROKEN_PAGES,
+                    Severity::High,
+                    "Page links to broken internal targets",
+                    format!(
+                        "Page links to {} broken internal target(s): {}.",
+                        targets.len(),
+                        shown_targets.join(", "),
+                    ),
                 ));
             }
 
@@ -183,5 +219,44 @@ mod tests {
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].issue_type.id(), "no_internal_links_out");
         assert_eq!(issues[0].url, root);
+    }
+
+    #[test]
+    fn derives_broken_target_issue_with_unique_sorted_details() {
+        let source = "https://example.com/source";
+        let first = "https://example.com/first";
+        let second = "https://example.com/second";
+        let third = "https://example.com/third";
+        let fourth = "https://example.com/fourth";
+        let mut broken_first = link(source, first);
+        broken_first.target_status = Some(404);
+        let mut broken_second = link(source, second);
+        broken_second.target_status = Some(500);
+        let mut broken_third = link(source, third);
+        broken_third.target_status = Some(404);
+        let mut broken_fourth = link(source, fourth);
+        broken_fourth.target_status = Some(410);
+        let facts = CrawlFacts::new(
+            vec![page(source, 0)],
+            vec![
+                broken_third,
+                broken_first,
+                broken_second,
+                broken_fourth,
+                link(source, first),
+            ],
+        );
+
+        let issues = derive(&facts);
+        let issue = issues
+            .iter()
+            .find(|issue| issue.issue_type.id() == "internal_links_to_broken_pages")
+            .expect("broken-target issue");
+
+        assert_eq!(issue.severity, Severity::High);
+        assert_eq!(
+            issue.details,
+            "Page links to 4 broken internal target(s): https://example.com/first, https://example.com/fourth, https://example.com/second, and 1 more."
+        );
     }
 }
