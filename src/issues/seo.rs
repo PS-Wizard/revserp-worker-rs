@@ -6,6 +6,7 @@ mod broken_pages;
 mod content_quality;
 mod headings;
 mod indexability;
+mod media_optimization;
 mod serp_metadata;
 mod technical_seo;
 
@@ -19,6 +20,7 @@ pub(super) fn derive(facts: &CrawlFacts) -> Vec<DerivedIssue> {
         issues.extend(indexability::derive(page, facts));
         issues.extend(serp_metadata::derive(page));
         issues.extend(technical_seo::derive(page));
+        issues.extend(media_optimization::derive(page));
         issues.extend(headings::derive(page));
         issues.extend(content_quality::derive(page));
     }
